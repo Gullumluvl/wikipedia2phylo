@@ -18,4 +18,4 @@ tree from wikipedia article into a format for bioinformaticians (newick).
 
 # License
 
-This code is licensed under the GNU Lesser General Public License (LGPL) v.3.
+This code is licensed under the GNU General Public License (GPL) v.3.
