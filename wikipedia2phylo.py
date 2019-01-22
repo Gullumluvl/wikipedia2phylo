@@ -5,6 +5,7 @@
 """Parse phylogenetic trees from a wikipedia page, and save it in a
 bioinformatics format (e.g newick)"""
 
+from __future__ import print_function
 
 import os.path as op
 #import string  # Check for whitespaces in text elements
@@ -183,36 +184,42 @@ def build_tree(tablesoup, recurs=0, _recurs_count=0):
 
 
 def main(term, outbase=None, outfmt=None, nhx=False, show_img=False, recurs=0):
-    if show_img:
-        #async def?
-        def add_img(node):
-            nodeimg = getattr(node, 'img', None)
-            if nodeimg:
-                if nodeimg.startswith('//'):
-                    nodeimg = 'https:' + nodeimg
-                #await ?
-                ete3.add_face_to_node(ete3.ImgFace(nodeimg,
-                                                   width=int(node.imgwidth),
-                                                   height=int(node.imgheight),
-                                                   is_url=True),
-                                      node, column=1, position='branch-right')
-    else:
-        def add_img(node):
-            pass
+    graphics_fmts = set(outfmt).intersection(('png', 'jpg', 'svg', 'pdf')) \
+                    if outfmt is not None else set()
+    
+    if graphics_fmts or (not outbase and not outfmt):
+        # Define only when the above conditions are verified, so that you
+        # can fallback on text methods when PyQt is not installed.
+        if show_img:
+            #async def?
+            def add_img(node):
+                nodeimg = getattr(node, 'img', None)
+                if nodeimg:
+                    if nodeimg.startswith('//'):
+                        nodeimg = 'https:' + nodeimg
+                    #await ?
+                    ete3.add_face_to_node(ete3.ImgFace(nodeimg,
+                                                       width=int(node.imgwidth),
+                                                       height=int(node.imgheight),
+                                                       is_url=True),
+                                          node, column=1, position='branch-right')
+        else:
+            def add_img(node):
+                pass
 
-    ns = ete3.NodeStyle(size=0)
-    dashed_branch = ete3.NodeStyle(size=0, hz_line_type=1)
+        ns = ete3.NodeStyle(size=0)
+        dashed_branch = ete3.NodeStyle(size=0, hz_line_type=1)
 
-    def mylayout(node):
-        node.set_style(ns)
-        if not node.is_leaf():
-            ete3.add_face_to_node(ete3.TextFace(node.name), node, column=0,
-                                  position='branch-top')
-            ete3.add_face_to_node(ete3.TextFace('\n'.join(getattr(node, 'info', []))),
-                                  node, column=0, position='branch-bottom')
-        if node.support <= 0.5:
-            node.set_style(dashed_branch)
-        add_img(node)
+        def mylayout(node):
+            node.set_style(ns)
+            if not node.is_leaf():
+                ete3.add_face_to_node(ete3.TextFace(node.name), node, column=0,
+                                      position='branch-top')
+                ete3.add_face_to_node(ete3.TextFace('\n'.join(getattr(node, 'info', []))),
+                                      node, column=0, position='branch-bottom')
+            if node.support <= 0.5:
+                node.set_style(dashed_branch)
+            add_img(node)
 
     treesoups = get_wiki_tree(term)
     logger.info("Found %d phylogenetic trees", len(treesoups))
@@ -230,16 +237,15 @@ def main(term, outbase=None, outfmt=None, nhx=False, show_img=False, recurs=0):
                 if txt is not None:
                     print(txt)
             outputfuncs.append(output)
-        graphics_fmts = set(outfmt).intersection(('png', 'jpg', 'svg', 'pdf'))
-        if graphics_fmts and outbase:
-            def output(tree, i):
-                for fmt in graphics_fmts:
-                    tree.render((outbase % i) + '.' + fmt, mylayout)
-            outputfuncs.append(output)
         if 'ascii' in outfmt:
             # Always to stdout
             def output(tree, i):
                 print(tree.get_ascii())
+            outputfuncs.append(output)
+        if graphics_fmts and outbase:
+            def output(tree, i):
+                for fmt in graphics_fmts:
+                    tree.render((outbase % i) + '.' + fmt, mylayout)
             outputfuncs.append(output)
         def outputs(tree, i):
             for outfunc in outputfuncs:
