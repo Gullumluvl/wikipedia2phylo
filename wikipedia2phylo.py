@@ -127,7 +127,7 @@ def build_tree(tablesoup, recurs=0, _recurs_count=0):
                 nodes.append(ete3.TreeNode(name=cladename))
                 nodes[-1].add_feature('info', [])
                 nodes[-1].add_feature('wikipedia_page_depth', _recurs_count)
-                if 'dashed' in cell0['style']:
+                if 'dashed' in cell0.get('style', ()):
                     # This branch is controversial
                     nodes[-1].support = 0.5
 
@@ -283,7 +283,8 @@ if __name__ == '__main__':
     parser.add_argument('outbase', nargs='?',
                         help='Output file basename. If None, display the tree.')
     parser.add_argument('-f', '--outfmt', action='append', default=None,
-                        choices=['nwk', 'ascii', 'svg', 'pdf', 'png', 'jpg'])
+                        choices=['nwk', 'ascii', 'svg', 'pdf', 'png', 'jpg'],
+                        help='[if None, display the tree]')
     parser.add_argument('--nhx', action='store_true',
                         help="Save the 'info', 'link' and 'img' features as NHX comments.")
     parser.add_argument('-i', '--img', action='store_true', dest='show_img',
