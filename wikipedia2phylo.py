@@ -39,10 +39,17 @@ logging.basicConfig(format='%(levelname)s:%(funcName)s:%(message)s')
 WIKIPEDIA_URL = 'https://en.wikipedia.org'
 SEARCH_URL = WIKIPEDIA_URL + '/w/index.php'
 
+VALID_FORMATS = frozenset(('pdf', 'nhx', 'nwk', 'svg', 'png', 'jpg', 'ascii'))
+
 
 # async def
-def get_wiki_tree(term=None, url=SEARCH_URL):
+def get_wiki_tree(term='', url=SEARCH_URL):
     # await
+    tree_index = None
+    if term.rsplit('#', 1)[-1].isdigit():
+        term, _, tree_index = term.rpartition('#')
+        tree_index = int(tree_index)
+
     page = requests.get(url, params=({'search': term} if term else None))
 
     if not page.ok:
@@ -62,6 +69,8 @@ def get_wiki_tree(term=None, url=SEARCH_URL):
             last = list(tablesoup.descendants)[-1]
         except IndexError:
             break
+        if tree_index == len(tablesoups):
+            break
         tablesoup = last.findNext('table', class_='clade')
 
     if not tablesoups:
@@ -79,6 +88,8 @@ def get_wiki_tree(term=None, url=SEARCH_URL):
             else:
                 logger.error("No recognizable content in the fetched html page.")
 
+    if tree_index:
+        return [tablesoups[-1]]
     return tablesoups
 
 
@@ -140,7 +151,6 @@ def build_tree(tablesoup, recurs=0, _recurs_count=0):
                     leafname = cladeleaf.get_text().strip()
                     #not_img = lambda tag: "image" not in tag.get('class', '')
                     leaflink = cladeleaf.find('a')
-                    leafimg = cladeleaf.find('img')
                     if not nodes[-1].name:
                         # Update the preceding node, which is actually just the leading branch.
                         nodes[-1].name = leafname
@@ -155,10 +165,10 @@ def build_tree(tablesoup, recurs=0, _recurs_count=0):
                             logger.warning("Alternative leaf links: " + \
                                     ";".join("%r class=%r" % (l.get_text(), l.get('class'))
                                              for l in otherlinks))
-                    if leafimg:
-                        nodes[-1].add_feature('img', leafimg['src'])
-                        nodes[-1].add_feature('imgwidth', leafimg['width'])
-                        nodes[-1].add_feature('imgheight', leafimg['height'])
+                    nodes[-1].add_features(imgs=[], imgsizes=[])
+                    for leafimg in cladeleaf.find_all('img'):
+                        nodes[-1].imgs.append(leafimg['src'])
+                        nodes[-1].imgsizes.append((leafimg['width'], leafimg['height']))
 
                     if _recurs_count < recurs and leaflink and 'redlink=1' not in leaflink['href']:
                         href = leaflink['href']
@@ -200,26 +210,36 @@ def build_tree(tablesoup, recurs=0, _recurs_count=0):
     return nodes
 
 
-def main(term, outbase=None, outfmt=None, nhx=False, show_img=False, recurs=0):
-    graphics_fmts = set(outfmt).intersection(('png', 'jpg', 'svg', 'pdf')) \
-                    if outfmt is not None else set()
+def main(term, outbase=None, outfmt=None, show_img=False, recurs=0):
+    outfmt = set() if outfmt is None else set(outfmt.lower().split(','))
+    invalid_fmts = outfmt - VALID_FORMATS
+    if invalid_fmts:
+        raise ValueError('Specified invalid formats: ' + ','.join(invalid_fmts))
+
+    show_graphic = not outbase and not outfmt.intersection(('nwk', 'nhx', 'ascii'))
+    save_graphics = outfmt.intersection(('png', 'jpg', 'svg', 'pdf')) if outbase else set()
     
-    if graphics_fmts or (not outbase and not outfmt):
+    if save_graphics or show_graphic:
         # Define only when the above conditions are verified, so that you
         # can fallback on text methods when PyQt is not installed.
         if show_img:
             #async def?
             def add_img(node):
-                nodeimg = getattr(node, 'img', None)
-                if nodeimg:
-                    if nodeimg.startswith('//'):
-                        nodeimg = 'https:' + nodeimg
+                if not getattr(node, 'imgs', None):  # Empty or missing
+                    return
+                if len(node.imgs) != len(node.imgsizes):
+                    raise ValueError('Unequal lengths at node %r: %d imgs VS %d imgsizes', node.name, len(node.imgs), len(node.imgsizes))
+                i = 0
+                for img, (imgwidth, imgheight) in zip(node.imgs, node.imgsizes):
+                    i += 1
+                    if img.startswith('//'):
+                        img = 'https:' + img
                     #await ?
-                    ete3.add_face_to_node(ete3.ImgFace(nodeimg,
-                                                       width=int(node.imgwidth),
-                                                       height=int(node.imgheight),
+                    ete3.add_face_to_node(ete3.ImgFace(img,
+                                                       width=int(imgwidth),
+                                                       height=int(imgheight),
                                                        is_url=True),
-                                          node, column=1, position='branch-right')
+                                          node, column=i, position='branch-right')
         else:
             def add_img(node):
                 pass
@@ -238,31 +258,40 @@ def main(term, outbase=None, outfmt=None, nhx=False, show_img=False, recurs=0):
                 node.set_style(dashed_branch)
             add_img(node)
 
-    treesoups = get_wiki_tree(term)
-    logger.info("Found %d phylogenetic trees", len(treesoups))
-    if outfmt:
-        if outbase:
-            outbase += '-%d'
+    if not show_graphic:
         outputfuncs = []
-        if 'nwk' in outfmt:
-            features = ['support', 'info', 'link', 'img'] if nhx else None
-            def output(tree, i):
-                # format 8: all names
-                outfile = (outbase % i + '.nwk') if outbase else None
-                txt = tree.write(outfile=outfile, format=8,
-                                 format_root_node=True, features=features)
-                if txt is not None:
-                    print(txt)
-            outputfuncs.append(output)
         if 'ascii' in outfmt:
             # Always to stdout
             def output(tree, i):
                 print(tree.get_ascii())
             outputfuncs.append(output)
-        if graphics_fmts and outbase:
+        if outbase:
+            outbase += '-%d'
+        if save_graphics:
             def output(tree, i):
-                for fmt in graphics_fmts:
-                    tree.render((outbase % i) + '.' + fmt, mylayout)
+                for fmt in save_graphics:
+                    tree.render((outbase % i) + '.' + fmt, mylayout, w=800, dpi=150)
+            outputfuncs.append(output)
+        if 'nwk' in outfmt:
+            def output(tree, i):
+                # format 8: all names
+                outfile = (outbase % i + '.nwk') if outbase else None
+                txt = tree.write(outfile=outfile, format=8, quoted_node_names=True, format_root_node=True)
+                if txt is not None:
+                    print(txt)
+            outputfuncs.append(output)
+        if 'nhx' in outfmt:
+            def output(tree, i):
+                for node in tree.traverse():
+                    if 'imgs' in node.features:
+                        node.imgs = ' '.join(node.imgs)
+                        node.imgsizes = ' '.join('%sx%s' % size for size in node.imgsizes)
+                outfile = (outbase % i + '.nhx') if outbase else None
+                txt = tree.write(['support', 'info', 'link', 'imgs', 'imgsizes'],
+                                 outfile=outfile, format=8,
+                                 quoted_node_names=True, format_root_node=True)
+                if txt is not None:
+                    print(txt)
             outputfuncs.append(output)
         def outputs(tree, i):
             for outfunc in outputfuncs:
@@ -271,22 +300,44 @@ def main(term, outbase=None, outfmt=None, nhx=False, show_img=False, recurs=0):
         def outputs(tree, i):
             tree.show(mylayout, name=('Tree n°%d: %s' %(i, tree.name)))
 
-    for i, treesoup in enumerate(treesoups):
-        tree, = build_tree(treesoup, recurs)
-        outputs(tree, i)
+    if op.exists(term):
+        # It's an existing file, load the tree from it.
+        tree = ete3.Tree(term, format=8, quoted_node_names=True)
+        for node in tree.traverse():
+            if getattr(node, 'imgs', None):
+                node.imgs = node.imgs.split()
+                imgsizes = []
+                for size_txt in node.imgsizes.split():
+                    w, h = size_txt.split('x', 1)
+                    imgsizes.append((int(w), int(h)))
+                node.imgsizes = imgsizes
+        outputs(tree, 0)
+    else:
+        # Fetch the tree from Wikipedia
+        treesoups = get_wiki_tree(term)
+        logger.info("Fetched %d phylogenetic trees", len(treesoups))
+        trees = []
+        for i, treesoup in enumerate(treesoups):
+            roots = build_tree(treesoup, recurs)
+            if len(roots) > 1:
+                logger.warning('Several root nodes for tree soup %d. May be malformed.', i)
+            outputs(roots[0], i)
 
 
 if __name__ == '__main__':
     
     parser = ap.ArgumentParser(description=__doc__)
-    parser.add_argument('term', help='Searched wikipedia page')
+    parser.add_argument('term', help=("Searched wikipedia page, or an existing NHX file produced by wikipedia2phylo"))
     parser.add_argument('outbase', nargs='?',
                         help='Output file basename. If None, display the tree.')
-    parser.add_argument('-f', '--outfmt', action='append', default=None,
-                        choices=['nwk', 'ascii', 'svg', 'pdf', 'png', 'jpg'],
-                        help='[if None, display the tree]')
-    parser.add_argument('--nhx', action='store_true',
-                        help="Save the 'info', 'link' and 'img' features as NHX comments.")
+    parser.add_argument('-f', '--outfmt', default='pdf',
+                        help=("comma-separated list of output formats among:"
+                              " pdf [default], nwk, nhx, svg, png, jpg. "
+                              " NHX format is newick with the 'info', 'link' "
+                              "and 'img' node attributes. "
+                              "'nwk' or 'nhx' without outbase prints to stdout."
+                              " Any other format without outbase only displays the tree.")
+                        )
     parser.add_argument('-i', '--img', action='store_true', dest='show_img',
                         help='Download and display images attached to clades.')
     parser.add_argument('-r', '--recurs', type=int, default=0, metavar='R',
